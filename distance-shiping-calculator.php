@@ -107,8 +107,8 @@ function dsc_osrm_render_calculator()
                     data: {
                         format: "json",
                         q: address,
-                        limit: 1, // use the first result
-                        countrycodes: "us" // restrict to USA
+                        limit: 1,
+                        countrycodes: "us"
                     },
                     dataType: 'json',
                     headers: {
