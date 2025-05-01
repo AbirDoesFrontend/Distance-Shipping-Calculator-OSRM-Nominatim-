@@ -1,9 +1,9 @@
 <?php
 /*
-Plugin Name: Distance & Shipping Calculator (OSRM/Nominatim) with WooCommerce Product Integration
+Plugin Name: Distance & Shipping Calculator (Google Maps) with WooCommerce Product Integration
 Plugin URI:  https://example.com/
-Description: Calculates driving distance between pickup and drop-off using Nominatim + OSRM, displays map, and adds as a WooCommerce product at checkout, with optional services.
-Version:     1.5.2
+Description: Calculates driving distance between pickup and drop-off using Google Maps API, displays map, and adds as a WooCommerce product at checkout, with optional services.
+Version:     1.6.0
 Author:      Abir Khan
 Author URI:  https://example.com/
 License:     GPL2
@@ -16,310 +16,178 @@ if ( ! defined( 'DSC_SHIPPING_PRODUCT_ID' ) ) {
     define( 'DSC_SHIPPING_PRODUCT_ID', 1054 );
 }
 
+// Define your Google Maps API Key
+if ( ! defined( 'DSC_GOOGLE_MAPS_API_KEY' ) ) {
+    define( 'DSC_GOOGLE_MAPS_API_KEY', 'YOUR_GOOGLE_MAPS_API_KEY' );
+}
+
 // Enqueue necessary scripts & styles
 add_action( 'wp_enqueue_scripts', 'dsc_enqueue_assets' );
 function dsc_enqueue_assets() {
-    wp_enqueue_script( 'jquery-ui-autocomplete' );
-    wp_enqueue_style( 'dsc-jquery-ui-css',
-        'https://code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css',
-        [], '1.13.2'
+    // Google Maps JavaScript with Places and Directions libraries, callback to initMap
+    wp_enqueue_script(
+        'google-maps',
+        "https://maps.googleapis.com/maps/api/js?key=" . DSC_GOOGLE_MAPS_API_KEY . "&libraries=places&callback=initMap",
+        array(),
+        null,
+        true
     );
-    wp_enqueue_style( 'leaflet-css',
-        'https://unpkg.com/leaflet@1.9.3/dist/leaflet.css',
-        [], '1.9.3'
-    );
-    wp_enqueue_script( 'leaflet-js',
-        'https://unpkg.com/leaflet@1.9.3/dist/leaflet.js',
-        [], '1.9.3', true
+    // Leaflet CSS removed; using Google Maps now
+    wp_enqueue_style( 'dsc-google-map-css',
+        'https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css',
+        array(),
+        '4.5.2'
     );
 }
 
-// Shortcode: [distance_shipping_calculator_osrm]
-add_shortcode( 'distance_shipping_calculator_osrm', 'dsc_osrm_render_calculator' );
-function dsc_osrm_render_calculator() {
+// Shortcode: [distance_shipping_calculator_google]
+add_shortcode( 'distance_shipping_calculator_google', 'dsc_google_render_calculator' );
+function dsc_google_render_calculator() {
     ob_start(); ?>
     <style>
-      /* Simple spinner CSS */
-      .dsc-spinner {
-        display: inline-block;
-        width: 18px;
-        height: 18px;
-        border: 2px solid #ccc;
-        border-top: 2px solid #333;
-        border-radius: 50%;
-        animation: spin 0.6s linear infinite;
-        vertical-align: middle;
-        margin-left: 8px;
-      }
-      @keyframes spin {
-        to { transform: rotate(360deg); }
-      }
+      #dsc-map { height: 400px; width: 100%; margin-top: 20px; }
+      .dsc-spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #ccc; border-top: 2px solid #333; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-left: 8px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
     </style>
-    <!-- Wrapper container for the form and map -->
+
     <div id="dsc-wrapper">
-      <div class="form-div">
-        <form id="dsc-osrm-form">
-          <p>
-            <label for="pickup">Pickup Location:</label><br>
-            <input type="text" id="pickup" name="pickup" placeholder="Enter pickup address" required style="width:100%; padding:8px;">
-          </p>
-          <p>
-            <label for="dropoff">Drop-off Location (Return Center):</label><br>
-            <input type="text" id="dropoff" name="dropoff" placeholder="Enter return center address" required style="width:100%; padding:8px;">
-          </p>
-          <p>
-            <label for="packages">Number of Packages:</label><br>
-            <input type="number" id="packages" name="packages" value="1" min="1" required style="width:100%; padding:8px;">
-          </p>
-          <p>
-            <label for="weight">Weight per Package (lbs):</label><br>
-            <input type="number" id="weight" name="weight" value="1" min="0" step="any" required style="width:100%; padding:8px;">
-          </p>
-          <p>
-            <label for="distance_miles">Distance (miles) will auto calculate:</label><br>
-            <input type="text" id="distance_miles" name="distance_miles" readonly style="width:100%; background:#f9f9f9; padding:8px;">
-          </p>
-          <hr>
-          <div id="additional-services">
-            <p><strong>Additional Services</strong></p>
-            <p>
-              <label>
-                <input type="checkbox" id="service_label" name="service_label"> Label Printing (+$1 per label)
-              </label>
-            </p>
-            <p>
-              <label>
-                <input type="checkbox" id="service_packaging" name="service_packaging"> Packaging Service (+$2 per package)
-              </label>
-            </p>
-            <p>
-              <label>
-                <input type="checkbox" id="service_rush" name="service_rush"> Rush Service (+$3)
-              </label>
-            </p>
-            <p>
-              <label>
-                <input type="checkbox" id="service_bulk" name="service_bulk"> Bulk Discount (10% off for 5+ packages)
-              </label>
-            </p>
+      <form id="dsc-google-form">
+        <div class="form-group">
+          <label for="pickup">Pickup Location:</label>
+          <input type="text" id="pickup" name="pickup" class="form-control" placeholder="Enter pickup address" required>
+        </div>
+        <div class="form-group">
+          <label for="dropoff">Drop-off Location (Return Center):</label>
+          <input type="text" id="dropoff" name="dropoff" class="form-control" placeholder="Enter return center address" required>
+        </div>
+        <div class="form-group">
+          <label for="packages">Number of Packages:</label>
+          <input type="number" id="packages" name="packages" class="form-control" value="1" min="1" required>
+        </div>
+        <div class="form-group">
+          <label for="weight">Weight per Package (lbs):</label>
+          <input type="number" id="weight" name="weight" class="form-control" value="1" min="0" step="any" required>
+        </div>
+        <div class="form-group">
+          <label for="distance_miles">Distance (miles) will auto calculate:</label>
+          <input type="text" id="distance_miles" name="distance_miles" class="form-control" readonly>
+        </div>
+
+        <hr>
+        <div id="additional-services">
+          <p><strong>Additional Services</strong></p>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="service_label" name="service_label">
+            <label class="form-check-label" for="service_label">Label Printing (+$1 per label)</label>
           </div>
-          <hr>
-          <!-- Two buttons: one to calculate and one to checkout -->
-          <p>
-            <button id="calculate-btn" type="button" style="padding:10px 20px; font-size:16px;">Calculate</button>
-            <button id="checkout-btn" type="button" style="padding:10px 20px; font-size:16px; display:none; margin-left:10px;">Checkout</button>
-          </p>
-        </form>
-        <div id="dsc-osrm-result" style="margin-top:20px;"></div>
-      </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="service_packaging" name="service_packaging">
+            <label class="form-check-label" for="service_packaging">Packaging Service (+$2 per package)</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="service_rush" name="service_rush">
+            <label class="form-check-label" for="service_rush">Rush Service (+$3)</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="service_bulk" name="service_bulk">
+            <label class="form-check-label" for="service_bulk">Bulk Discount (10% off for 5+ packages)</label>
+          </div>
+        </div>
+        <hr>
+        <button id="calculate-btn" type="button" class="btn btn-primary">Calculate</button>
+        <button id="checkout-btn" type="button" class="btn btn-success" style="display:none; margin-left:10px;">Checkout</button>
+      </form>
+      <div id="dsc-osrm-result" style="margin-top:20px;"></div>
       <div id="dsc-map"></div>
     </div>
 
-    <script type="text/javascript">
-    (function($){
-      $(function(){
-        console.log('DSC plugin script loaded.');
+    <script>
+    var map, directionsService, directionsRenderer;
+    var computedFee = 0, computedMiles = 0, computedPkgCount = 0, computedPkgWeight = 0;
 
-        var params = {
-          ajax_url: '<?php echo esc_js( admin_url('admin-ajax.php') ); ?>',
-          checkout_url: '<?php echo esc_js( wc_get_checkout_url() ); ?>'
-        };
-        var map, pickupMarker, dropoffMarker, routeLayer;
-        // Global variables to store computed values
-        var computedFee = 0, computedMiles = 0, computedPkgCount = 0, computedPkgWeight = 0;
+    function initMap() {
+      map = new google.maps.Map(document.getElementById('dsc-map'), { center: { lat: 25.7617, lng: -80.1918 }, zoom: 12 });
+      directionsService = new google.maps.DirectionsService();
+      directionsRenderer = new google.maps.DirectionsRenderer({ map: map });
 
-        // Initialize map with default view (centered on Miami)
-        map = L.map('dsc-map').setView([25.7617, -80.1918], 12);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; OpenStreetMap contributors'
-        }).addTo(map);
+      var pickupInput = document.getElementById('pickup');
+      var dropoffInput = document.getElementById('dropoff');
+      var pickupAutocomplete = new google.maps.places.Autocomplete(pickupInput, { componentRestrictions: { country: 'us' } });
+      var dropoffAutocomplete = new google.maps.places.Autocomplete(dropoffInput, { componentRestrictions: { country: 'us' } });
 
-        function fetchSuggestions(req, resp) {
-          $.ajax({
-            url: 'https://nominatim.openstreetmap.org/search',
-            data: { format: 'json', q: req.term, addressdetails: 1, limit: 5 },
-            dataType: 'json',
-            success: function(data) {
-              resp($.map(data, function(item){
-                return {
-                  label: item.display_name,
-                  value: item.display_name,
-                  lat: item.lat,
-                  lon: item.lon
-                };
-              }));
-            },
-            error: function(){
-              console.error('Error fetching suggestions.');
-              resp([]);
-            }
-          });
+      document.getElementById('calculate-btn').addEventListener('click', function(e) {
+        e.preventDefault();
+        var pkgCount = parseInt(document.getElementById('packages').value, 10);
+        var pkgWeight = parseFloat(document.getElementById('weight').value);
+        if (pkgWeight > 50) {
+          document.getElementById('dsc-osrm-result').innerHTML = '<p style="color:red;">Packages over 50 lbs are not accepted.</p>';
+          return;
         }
-
-        $('#pickup,#dropoff').autocomplete({
-          source: fetchSuggestions,
-          minLength: 3,
-          select: function(e, ui){
-            $(this).data('lat', ui.item.lat).data('lon', ui.item.lon);
-            renderMap();
-          }
-        });
-
-        function renderMap(){
-          var pLat = +$('#pickup').data('lat'),
-              pLon = +$('#pickup').data('lon'),
-              dLat = +$('#dropoff').data('lat'),
-              dLon = +$('#dropoff').data('lon');
-          if (pLat && pLon && dLat && dLon) {
-            var url = `https://router.project-osrm.org/route/v1/driving/${pLon},${pLat};${dLon},${dLat}?overview=full&geometries=geojson`;
-            $.getJSON(url, function(r){
-              var coords = r.routes[0].geometry.coordinates.map(function(c){ return [c[1], c[0]]; });
-              if(routeLayer) { map.removeLayer(routeLayer); }
-              if(pickupMarker) { map.removeLayer(pickupMarker); }
-              if(dropoffMarker) { map.removeLayer(dropoffMarker); }
-              map.fitBounds(coords);
-              pickupMarker = L.marker([pLat, pLon]).addTo(map);
-              dropoffMarker = L.marker([dLat, dLon]).addTo(map);
-              routeLayer = L.geoJSON(r.routes[0].geometry).addTo(map);
-            }).fail(function(jqXHR, textStatus, errorThrown) {
-              console.error('Error rendering map route:', textStatus, errorThrown);
-            });
-          }
+        var pickupPlace = pickupAutocomplete.getPlace();
+        var dropoffPlace = dropoffAutocomplete.getPlace();
+        if (!pickupPlace || !pickupPlace.geometry || !dropoffPlace || !dropoffPlace.geometry) {
+          document.getElementById('dsc-osrm-result').innerHTML = '<p style="color:red;">Please select valid addresses from suggestions.</p>';
+          return;
         }
+        directionsService.route({
+          origin: pickupPlace.geometry.location,
+          destination: dropoffPlace.geometry.location,
+          travelMode: 'DRIVING'
+        }, function(result, status) {
+          if (status === 'OK') {
+            directionsRenderer.setDirections(result);
+            var leg = result.routes[0].legs[0];
+            var miles = leg.distance.value / 1609.34;
+            document.getElementById('distance_miles').value = miles.toFixed(2);
 
-        function getRoute(p, d) {
-          console.log('Getting route for:', p, d);
-          return $.ajax({
-            url: `https://router.project-osrm.org/route/v1/driving/${p.lon},${p.lat};${d.lon},${d.lat}?overview=false`,
-            dataType: 'json'
-          });
-        }
+            // Pricing
+            var fee = 5 + miles * 1.25;
+            if (pkgCount > 1) fee += (pkgCount - 1) * 2;
+            if (pkgWeight > 25 && pkgWeight <= 50) fee += pkgCount * 3;
 
-        function geocode(q) {
-          return $.ajax({
-            url: 'https://nominatim.openstreetmap.org/search',
-            data: { format:'json', q: q, limit:1 },
-            dataType: 'json'
-          });
-        }
+            computedFee = fee;
+            computedMiles = miles;
+            computedPkgCount = pkgCount;
+            computedPkgWeight = pkgWeight;
 
-        // Calculate button: perform route calculation and pricing
-        $('#calculate-btn').on('click', function(e){
-          e.preventDefault();
-          console.log('Calculate button clicked.');
-          var pkgCount = +$('#packages').val(),
-              pkgWeight = +$('#weight').val();
-
-          // Validate the package weight
-          if (pkgWeight > 50) {
-            $('#dsc-osrm-result').html('<p style="color:red;">Packages over 50 lbs are not accepted.</p>');
-            return;
-          }
-
-          $('#dsc-osrm-result').html('<p>Calculating...</p>');
-
-          var p = { lat: $('#pickup').data('lat'), lon: $('#pickup').data('lon') },
-              d = { lat: $('#dropoff').data('lat'), lon: $('#dropoff').data('lon') };
-
-          function compute(pCoords, dCoords) {
-            console.log('Computing route with coords:', pCoords, dCoords);
-            $.when(getRoute(pCoords, dCoords)).done(function(r) {
-              if (r.routes && r.routes.length) {
-                var miles = r.routes[0].distance / 1609.34;
-                $('#distance_miles').val(miles.toFixed(2));
-
-                // Dynamic Pricing Model:
-                // 1️⃣ Base Fee: $5
-                var fee = 5;
-                // 2️⃣ Distance-Based Fee: $1.25 per mile
-                fee += miles * 1.25;
-                // 3️⃣ Multiple Package Fee: first package included, each additional package costs $2
-                if (pkgCount > 1) {
-                  fee += (pkgCount - 1) * 2;
-                }
-                // 4️⃣ Weight-Based Fee: if weight is between 26-50 lbs, add $3 per package
-                if (pkgWeight > 25 && pkgWeight <= 50) {
-                  fee += pkgCount * 3;
-                }
-
-                // Save computed values in global variables for later checkout
-                computedFee = fee;
-                computedMiles = miles;
-                computedPkgCount = pkgCount;
-                computedPkgWeight = pkgWeight;
-
-                console.log('Route computed: ', { miles: miles.toFixed(2), fee: fee.toFixed(2) });
-                $('#dsc-osrm-result').html(
-                  `<p><strong>Distance:</strong> ${miles.toFixed(2)} miles</p>
-                   <p><strong>Fee:</strong> $${fee.toFixed(2)}</p>`
-                );
-                // Show the Checkout button once calculation is done
-                $('#checkout-btn').fadeIn('fast');
-              } else {
-                $('#dsc-osrm-result').html('<p>No route found.</p>');
-                console.error('No route found in response:', r);
-              }
-            }).fail(function(jqXHR, textStatus, errorThrown){
-              console.error('Routing error:', textStatus, errorThrown);
-              $('#dsc-osrm-result').html('<p>Please Enter Correct Address & Try again.</p>');
-            });
-          }
-
-          if (p.lat && p.lon && d.lat && d.lon) {
-            compute(p, d);
+            document.getElementById('dsc-osrm-result').innerHTML =
+              '<p><strong>Distance:</strong> ' + miles.toFixed(2) + ' miles</p>' +
+              '<p><strong>Fee:</strong> $' + fee.toFixed(2) + '</p>';
+            document.getElementById('checkout-btn').style.display = 'inline-block';
           } else {
-            $.when(geocode($('#pickup').val()), geocode($('#dropoff').val()))
-             .done(function(pa, da){
-               compute(
-                 { lat: pa[0].lat, lon: pa[0].lon },
-                 { lat: da[0].lat, lon: da[0].lon }
-               );
-             });
+            document.getElementById('dsc-osrm-result').innerHTML = '<p>No route found.</p>';
           }
         });
-
-        // Checkout button: send data to server and redirect
-        $('#checkout-btn').on('click', function(e){
-          e.preventDefault();
-          console.log('Checkout button clicked.');
-          // Use the computed values; additional services are taken from checkbox states
-          $.post(params.ajax_url, {
-            action:            'dsc_set_shipping_fee',
-            shipping_fee:      computedFee.toFixed(2),
-            distance:          computedMiles.toFixed(2),
-            packages:          computedPkgCount,
-            weight:            computedPkgWeight,
-            service_label:     $('#service_label').is(':checked') ? 1 : 0,
-            service_packaging: $('#service_packaging').is(':checked') ? 1 : 0,
-            service_rush:      $('#service_rush').is(':checked') ? 1 : 0,
-            service_bulk:      $('#service_bulk').is(':checked') ? 1 : 0
-          }).done(function(response) {
-            console.log('AJAX success. Response:', response);
-            // Hide the wrapper containing the form and map
-            $('#dsc-wrapper').fadeOut('fast', function(){
-              // Append a full-screen loading overlay
-              var loadingHtml = '<div id="dsc-loading" style="position:fixed; top:0; left:0; width:100%; height:100%; display:flex; justify-content:center; align-items:center; background:#fff; z-index:9999;">' +
-                '<div><p><strong>Redirecting to checkout...</strong> <span class="dsc-spinner"></span><br><em>Please wait...</em></p></div>' +
-                '</div>';
-              $('body').append(loadingHtml);
-              setTimeout(function() {
-                window.location.href = params.checkout_url;
-              }, 1000);
-            });
-          }).fail(function(jqXHR, textStatus, errorThrown) {
-            console.error('AJAX post error:', textStatus, errorThrown);
-            $('#dsc-osrm-result').html('<p>Error setting shipping fee. Please try again.</p>');
-          });
-        });
-
       });
-    })(jQuery);
+
+      document.getElementById('checkout-btn').addEventListener('click', function(e) {
+        e.preventDefault();
+        var data = {
+          action: 'dsc_set_shipping_fee',
+          shipping_fee: computedFee.toFixed(2),
+          distance: computedMiles.toFixed(2),
+          packages: computedPkgCount,
+          weight: computedPkgWeight,
+          service_label: document.getElementById('service_label').checked ? 1 : 0,
+          service_packaging: document.getElementById('service_packaging').checked ? 1 : 0,
+          service_rush: document.getElementById('service_rush').checked ? 1 : 0,
+          service_bulk: document.getElementById('service_bulk').checked ? 1 : 0
+        };
+        jQuery.post('<?php echo esc_js( admin_url('admin-ajax.php') ); ?>', data)
+         .done(function(response) {
+           jQuery('#dsc-wrapper').fadeOut('fast', function() {
+             jQuery('body').append('<div style="position:fixed;top:0;left:0;width:100%;height:100%;display:flex;justify-content:center;align-items:center;background:#fff;z-index:9999;"><div><p><strong>Redirecting to checkout...</strong> <span class="dsc-spinner"></span><br><em>Please wait...</em></p></div></div>');
+             setTimeout(function(){ window.location.href = '<?php echo esc_js( wc_get_checkout_url() ); ?>'; }, 1000);
+           });
+         });
+      });
+    }
     </script>
     <?php
     return ob_get_clean();
 }
 
-// AJAX handler: add Distance Shipping product
+// Remainder of PHP (AJAX handler, cart hooks) unchanged from original plugin
 add_action( 'wp_ajax_dsc_set_shipping_fee', 'dsc_set_shipping_fee' );
 add_action( 'wp_ajax_nopriv_dsc_set_shipping_fee', 'dsc_set_shipping_fee' );
 function dsc_set_shipping_fee() {
@@ -336,14 +204,12 @@ function dsc_set_shipping_fee() {
     if ( ! empty( $_POST['service_rush'] ) )      { $services['Rush Service']      = 3; }
     if ( ! empty( $_POST['service_bulk'] ) )      { $services['Bulk Discount']     = '-'; }
 
-    // Remove existing DSC items
     foreach ( WC()->cart->get_cart() as $key => $item ) {
         if ( ! empty( $item['is_dsc_product'] ) ) {
             WC()->cart->remove_cart_item( $key );
         }
     }
 
-    // Add new DSC item
     $cart_key = WC()->cart->add_to_cart(
         DSC_SHIPPING_PRODUCT_ID,
         1,
@@ -363,11 +229,9 @@ function dsc_set_shipping_fee() {
         WC()->cart->calculate_totals();
         wp_send_json_success( [ 'checkout_url' => wc_get_checkout_url() ] );
     }
-
     wp_send_json_error( 'Could not add distance-shipping product.' );
 }
 
-// Override price & title before totals
 add_action( 'woocommerce_before_calculate_totals', 'dsc_set_custom_price', 20 );
 function dsc_set_custom_price( $cart ) {
     if ( is_admin() && ! defined( 'DOING_AJAX' ) ) return;
@@ -381,7 +245,6 @@ function dsc_set_custom_price( $cart ) {
     }
 }
 
-// Display item data in cart & checkout
 add_filter( 'woocommerce_get_item_data', 'dsc_display_item_data', 10, 2 );
 function dsc_display_item_data( $data, $item ) {
     if ( ! empty( $item['is_dsc_product'] ) ) {
@@ -398,7 +261,6 @@ function dsc_display_item_data( $data, $item ) {
     return $data;
 }
 
-// Save item meta to order
 add_action( 'woocommerce_checkout_create_order_line_item', 'dsc_add_order_item_meta', 10, 4 );
 function dsc_add_order_item_meta( $item, $cart_key, $values, $order ) {
     if ( ! empty( $values['is_dsc_product'] ) ) {
