@@ -1,430 +1,415 @@
 <?php
 /*
-Plugin Name: Distance & Shipping Calculator (OSRM/Nominatim) with WooCommerce Integration
+Plugin Name: Distance & Shipping Calculator (OSRM/Nominatim) with WooCommerce Product Integration
 Plugin URI:  https://example.com/
-Description: Provides a form to calculate driving distance between pickup and drop-off locations using Nominatim for geocoding and OSRM for routing, then computes a final shipping price. Also integrates as a custom WooCommerce shipping method.
-Version:     1.1.2
+Description: Calculates driving distance between pickup and drop-off using Nominatim + OSRM, displays map, and adds as a WooCommerce product at checkout, with optional services.
+Version:     1.5.2
 Author:      Abir Khan
 Author URI:  https://example.com/
 License:     GPL2
 */
 
-if (!defined('ABSPATH')) {
-    exit; // Exit if accessed directly.
+if ( ! defined( 'ABSPATH' ) ) exit;
+
+// Define the WooCommerce product ID used for shipping
+if ( ! defined( 'DSC_SHIPPING_PRODUCT_ID' ) ) {
+    define( 'DSC_SHIPPING_PRODUCT_ID', 1054 );
 }
 
-/* ---------------------------------------------------------------------------
-   Section 1: Shortcode for Frontend Distance & Shipping Calculator
---------------------------------------------------------------------------- */
-// Register the shortcode [distance_shipping_calculator_osrm]
-add_shortcode('distance_shipping_calculator_osrm', 'dsc_osrm_render_calculator');
+// Enqueue necessary scripts & styles
+add_action( 'wp_enqueue_scripts', 'dsc_enqueue_assets' );
+function dsc_enqueue_assets() {
+    wp_enqueue_script( 'jquery-ui-autocomplete' );
+    wp_enqueue_style( 'dsc-jquery-ui-css',
+        'https://code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css',
+        [], '1.13.2'
+    );
+    wp_enqueue_style( 'leaflet-css',
+        'https://unpkg.com/leaflet@1.9.3/dist/leaflet.css',
+        [], '1.9.3'
+    );
+    wp_enqueue_script( 'leaflet-js',
+        'https://unpkg.com/leaflet@1.9.3/dist/leaflet.js',
+        [], '1.9.3', true
+    );
+}
 
-function dsc_osrm_render_calculator()
-{
+// Shortcode: [distance_shipping_calculator_osrm]
+add_shortcode( 'distance_shipping_calculator_osrm', 'dsc_osrm_render_calculator' );
+function dsc_osrm_render_calculator() {
     ob_start(); ?>
-    <form id="dsc-osrm-form" style="max-width:400px;">
-        <p>
+    <style>
+      /* Simple spinner CSS */
+      .dsc-spinner {
+        display: inline-block;
+        width: 18px;
+        height: 18px;
+        border: 2px solid #ccc;
+        border-top: 2px solid #333;
+        border-radius: 50%;
+        animation: spin 0.6s linear infinite;
+        vertical-align: middle;
+        margin-left: 8px;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+    <!-- Wrapper container for the form and map -->
+    <div id="dsc-wrapper">
+      <div class="form-div">
+        <form id="dsc-osrm-form">
+          <p>
             <label for="pickup">Pickup Location:</label><br>
-            <input type="text" id="pickup" name="pickup" placeholder="Enter pickup address" required style="width:100%;">
-        </p>
-        <p>
-            <label for="dropoff">Drop-off Location:</label><br>
-            <input type="text" id="dropoff" name="dropoff" placeholder="Enter drop-off address" required
-                style="width:100%;">
-        </p>
-        <p>
+            <input type="text" id="pickup" name="pickup" placeholder="Enter pickup address" required style="width:100%; padding:8px;">
+          </p>
+          <p>
+            <label for="dropoff">Drop-off Location (Return Center):</label><br>
+            <input type="text" id="dropoff" name="dropoff" placeholder="Enter return center address" required style="width:100%; padding:8px;">
+          </p>
+          <p>
             <label for="packages">Number of Packages:</label><br>
-            <input type="number" id="packages" name="packages" value="1" min="1" required style="width:100%;">
-        </p>
-        <p>
+            <input type="number" id="packages" name="packages" value="1" min="1" required style="width:100%; padding:8px;">
+          </p>
+          <p>
             <label for="weight">Weight per Package (lbs):</label><br>
-            <input type="number" id="weight" name="weight" value="0" min="0" step="any" required style="width:100%;">
-        </p>
-        <p>
-            <label for="distance_miles">Distance (miles):</label><br>
-            <input type="text" id="distance_miles" name="distance_miles" readonly style="width:100%; background:#f9f9f9;">
-        </p>
-        <p>
-            <button type="submit">Calculate Shipping Price</button>
-        </p>
-    </form>
-    <div id="dsc-osrm-result" style="margin-top:20px;"></div>
-
-    <!-- Include jQuery and jQuery UI CSS/JS for autocomplete functionality -->
-    <link rel="stylesheet" href="https://code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css">
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="https://code.jquery.com/ui/1.13.2/jquery-ui.min.js"></script>
+            <input type="number" id="weight" name="weight" value="1" min="0" step="any" required style="width:100%; padding:8px;">
+          </p>
+          <p>
+            <label for="distance_miles">Distance (miles) will auto calculate:</label><br>
+            <input type="text" id="distance_miles" name="distance_miles" readonly style="width:100%; background:#f9f9f9; padding:8px;">
+          </p>
+          <hr>
+          <div id="additional-services">
+            <p><strong>Additional Services</strong></p>
+            <p>
+              <label>
+                <input type="checkbox" id="service_label" name="service_label"> Label Printing (+$1 per label)
+              </label>
+            </p>
+            <p>
+              <label>
+                <input type="checkbox" id="service_packaging" name="service_packaging"> Packaging Service (+$2 per package)
+              </label>
+            </p>
+            <p>
+              <label>
+                <input type="checkbox" id="service_rush" name="service_rush"> Rush Service (+$3)
+              </label>
+            </p>
+            <p>
+              <label>
+                <input type="checkbox" id="service_bulk" name="service_bulk"> Bulk Discount (10% off for 5+ packages)
+              </label>
+            </p>
+          </div>
+          <hr>
+          <!-- Two buttons: one to calculate and one to checkout -->
+          <p>
+            <button id="calculate-btn" type="button" style="padding:10px 20px; font-size:16px;">Calculate</button>
+            <button id="checkout-btn" type="button" style="padding:10px 20px; font-size:16px; display:none; margin-left:10px;">Checkout</button>
+          </p>
+        </form>
+        <div id="dsc-osrm-result" style="margin-top:20px;"></div>
+      </div>
+      <div id="dsc-map"></div>
+    </div>
 
     <script type="text/javascript">
-        (function ($) {
-            // Function to query suggestions from Nominatim (restricted to USA)
-            function fetchSuggestions(request, responseCallback) {
-                $.ajax({
-                    url: "https://nominatim.openstreetmap.org/search",
-                    data: {
-                        format: "json",
-                        q: request.term,
-                        addressdetails: 1,
-                        limit: 5,
-                        countrycodes: "us" // restrict to USA
-                    },
-                    dataType: 'json',
-                    headers: {
-                        'Accept-Language': 'en'
-                    },
-                    success: function (data) {
-                        var suggestions = $.map(data, function (item) {
-                            return {
-                                label: item.display_name,
-                                value: item.display_name,
-                                lat: item.lat,
-                                lon: item.lon
-                            };
-                        });
-                        responseCallback(suggestions);
-                    },
-                    error: function () {
-                        responseCallback([]);
-                    }
-                });
-            }
+    (function($){
+      $(function(){
+        console.log('DSC plugin script loaded.');
 
-            // Initialize autocomplete for pickup and dropoff fields
-            $("#pickup, #dropoff").autocomplete({
-                source: fetchSuggestions,
-                minLength: 3,
-                select: function (event, ui) {
-                    // Store the latitude & longitude values on selection for later use.
-                    $(this).data("lat", ui.item.lat);
-                    $(this).data("lon", ui.item.lon);
-                }
+        var params = {
+          ajax_url: '<?php echo esc_js( admin_url('admin-ajax.php') ); ?>',
+          checkout_url: '<?php echo esc_js( wc_get_checkout_url() ); ?>'
+        };
+        var map, pickupMarker, dropoffMarker, routeLayer;
+        // Global variables to store computed values
+        var computedFee = 0, computedMiles = 0, computedPkgCount = 0, computedPkgWeight = 0;
+
+        // Initialize map with default view (centered on Miami)
+        map = L.map('dsc-map').setView([25.7617, -80.1918], 12);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        function fetchSuggestions(req, resp) {
+          $.ajax({
+            url: 'https://nominatim.openstreetmap.org/search',
+            data: { format: 'json', q: req.term, addressdetails: 1, limit: 5 },
+            dataType: 'json',
+            success: function(data) {
+              resp($.map(data, function(item){
+                return {
+                  label: item.display_name,
+                  value: item.display_name,
+                  lat: item.lat,
+                  lon: item.lon
+                };
+              }));
+            },
+            error: function(){
+              console.error('Error fetching suggestions.');
+              resp([]);
+            }
+          });
+        }
+
+        $('#pickup,#dropoff').autocomplete({
+          source: fetchSuggestions,
+          minLength: 3,
+          select: function(e, ui){
+            $(this).data('lat', ui.item.lat).data('lon', ui.item.lon);
+            renderMap();
+          }
+        });
+
+        function renderMap(){
+          var pLat = +$('#pickup').data('lat'),
+              pLon = +$('#pickup').data('lon'),
+              dLat = +$('#dropoff').data('lat'),
+              dLon = +$('#dropoff').data('lon');
+          if (pLat && pLon && dLat && dLon) {
+            var url = `https://router.project-osrm.org/route/v1/driving/${pLon},${pLat};${dLon},${dLat}?overview=full&geometries=geojson`;
+            $.getJSON(url, function(r){
+              var coords = r.routes[0].geometry.coordinates.map(function(c){ return [c[1], c[0]]; });
+              if(routeLayer) { map.removeLayer(routeLayer); }
+              if(pickupMarker) { map.removeLayer(pickupMarker); }
+              if(dropoffMarker) { map.removeLayer(dropoffMarker); }
+              map.fitBounds(coords);
+              pickupMarker = L.marker([pLat, pLon]).addTo(map);
+              dropoffMarker = L.marker([dLat, dLon]).addTo(map);
+              routeLayer = L.geoJSON(r.routes[0].geometry).addTo(map);
+            }).fail(function(jqXHR, textStatus, errorThrown) {
+              console.error('Error rendering map route:', textStatus, errorThrown);
             });
+          }
+        }
 
-            // Function to geocode an address using Nominatim (fallback when form is submitted, restricted to USA)
-            function geocodeAddress(address) {
-                return $.ajax({
-                    url: "https://nominatim.openstreetmap.org/search",
-                    data: {
-                        format: "json",
-                        q: address,
-                        limit: 1,
-                        countrycodes: "us"
-                    },
-                    dataType: 'json',
-                    headers: {
-                        'Accept-Language': 'en'
-                    }
-                });
-            }
+        function getRoute(p, d) {
+          console.log('Getting route for:', p, d);
+          return $.ajax({
+            url: `https://router.project-osrm.org/route/v1/driving/${p.lon},${p.lat};${d.lon},${d.lat}?overview=false`,
+            dataType: 'json'
+          });
+        }
 
-            // Function to get route distance using OSRM
-            function getRouteDistance(pickupCoords, dropoffCoords) {
-                // OSRM expects coordinates in the order: longitude,latitude
-                var url = 'https://router.project-osrm.org/route/v1/driving/' +
-                    pickupCoords.lon + ',' + pickupCoords.lat + ';' +
-                    dropoffCoords.lon + ',' + dropoffCoords.lat +
-                    '?overview=false';
+        function geocode(q) {
+          return $.ajax({
+            url: 'https://nominatim.openstreetmap.org/search',
+            data: { format:'json', q: q, limit:1 },
+            dataType: 'json'
+          });
+        }
 
-                return $.ajax({
-                    url: url,
-                    dataType: 'json'
-                });
-            }
+        // Calculate button: perform route calculation and pricing
+        $('#calculate-btn').on('click', function(e){
+          e.preventDefault();
+          console.log('Calculate button clicked.');
+          var pkgCount = +$('#packages').val(),
+              pkgWeight = +$('#weight').val();
 
-            $('#dsc-osrm-form').on('submit', function (e) {
-                e.preventDefault();
-                var pickup = $('#pickup').val();
-                var dropoff = $('#dropoff').val();
-                var packages = parseFloat($('#packages').val());
-                var weight = parseFloat($('#weight').val());
+          // Validate the package weight
+          if (pkgWeight > 50) {
+            $('#dsc-osrm-result').html('<p style="color:red;">Packages over 50 lbs are not accepted.</p>');
+            return;
+          }
 
-                $('#dsc-osrm-result').html('<p>Calculating...</p>');
+          $('#dsc-osrm-result').html('<p>Calculating...</p>');
 
-                // Check if the autocomplete provided latitude/longitude values
-                var pickupLat = $('#pickup').data("lat");
-                var pickupLon = $('#pickup').data("lon");
-                var dropoffLat = $('#dropoff').data("lat");
-                var dropoffLon = $('#dropoff').data("lon");
+          var p = { lat: $('#pickup').data('lat'), lon: $('#pickup').data('lon') },
+              d = { lat: $('#dropoff').data('lat'), lon: $('#dropoff').data('lon') };
 
-                // Function to continue with the calculated coordinates
-                function continueWithCoordinates(pickupCoords, dropoffCoords) {
-                    $.when(getRouteDistance(pickupCoords, dropoffCoords)).done(function (routeData) {
-                        if (routeData.routes && routeData.routes.length > 0) {
-                            var distanceMeters = routeData.routes[0].distance;
-                            var miles = distanceMeters / 1609.34;
+          function compute(pCoords, dCoords) {
+            console.log('Computing route with coords:', pCoords, dCoords);
+            $.when(getRoute(pCoords, dCoords)).done(function(r) {
+              if (r.routes && r.routes.length) {
+                var miles = r.routes[0].distance / 1609.34;
+                $('#distance_miles').val(miles.toFixed(2));
 
-                            // Update read-only input field with calculated miles
-                            $('#distance_miles').val(miles.toFixed(2));
-
-                            // Example pricing formula:
-                            // Base rate: $1 per mile
-                            // Surcharge: $2 per package
-                            // Weight factor: $0.50 per lb per package
-                            var price = (miles * 1) + (packages * 2) + (packages * weight * 0.5);
-
-                            $('#dsc-osrm-result').html(
-                                '<p><strong>Distance:</strong> ' + miles.toFixed(2) + ' miles</p>' +
-                                '<p><strong>Final Price:</strong> $' + price.toFixed(2) + '</p>'
-                            );
-                        } else {
-                            $('#dsc-osrm-result').html('<p>Could not calculate the route distance. Please try again.</p>');
-                        }
-                    }).fail(function () {
-                        $('#dsc-osrm-result').html('<p>Error retrieving the route from OSRM.</p>');
-                    });
+                // Dynamic Pricing Model:
+                // 1️⃣ Base Fee: $5
+                var fee = 5;
+                // 2️⃣ Distance-Based Fee: $1.25 per mile
+                fee += miles * 1.25;
+                // 3️⃣ Multiple Package Fee: first package included, each additional package costs $2
+                if (pkgCount > 1) {
+                  fee += (pkgCount - 1) * 2;
+                }
+                // 4️⃣ Weight-Based Fee: if weight is between 26-50 lbs, add $3 per package
+                if (pkgWeight > 25 && pkgWeight <= 50) {
+                  fee += pkgCount * 3;
                 }
 
-                // Use the stored latitude/longitude if available; otherwise, fallback to geocoding
-                if (pickupLat && pickupLon && dropoffLat && dropoffLon) {
-                    var pickupCoords = { lat: pickupLat, lon: pickupLon };
-                    var dropoffCoords = { lat: dropoffLat, lon: dropoffLon };
-                    continueWithCoordinates(pickupCoords, dropoffCoords);
-                } else {
-                    $.when(geocodeAddress(pickup), geocodeAddress(dropoff)).done(function (pickupData, dropoffData) {
-                        if (!pickupData[0] || !dropoffData[0] || pickupData[0].length === 0 || dropoffData[0].length === 0) {
-                            $('#dsc-osrm-result').html('<p>Could not geocode one or both addresses. Please check your input.</p>');
-                            return;
-                        }
+                // Save computed values in global variables for later checkout
+                computedFee = fee;
+                computedMiles = miles;
+                computedPkgCount = pkgCount;
+                computedPkgWeight = pkgWeight;
 
-                        var pickupCoords = {
-                            lat: pickupData[0][0].lat,
-                            lon: pickupData[0][0].lon
-                        };
-                        var dropoffCoords = {
-                            lat: dropoffData[0][0].lat,
-                            lon: dropoffData[0][0].lon
-                        };
-
-                        continueWithCoordinates(pickupCoords, dropoffCoords);
-                    }).fail(function () {
-                        $('#dsc-osrm-result').html('<p>Error geocoding the addresses.</p>');
-                    });
-                }
+                console.log('Route computed: ', { miles: miles.toFixed(2), fee: fee.toFixed(2) });
+                $('#dsc-osrm-result').html(
+                  `<p><strong>Distance:</strong> ${miles.toFixed(2)} miles</p>
+                   <p><strong>Fee:</strong> $${fee.toFixed(2)}</p>`
+                );
+                // Show the Checkout button once calculation is done
+                $('#checkout-btn').fadeIn('fast');
+              } else {
+                $('#dsc-osrm-result').html('<p>No route found.</p>');
+                console.error('No route found in response:', r);
+              }
+            }).fail(function(jqXHR, textStatus, errorThrown){
+              console.error('Routing error:', textStatus, errorThrown);
+              $('#dsc-osrm-result').html('<p>Please Enter Correct Address & Try again.</p>');
             });
-        })(jQuery);
+          }
+
+          if (p.lat && p.lon && d.lat && d.lon) {
+            compute(p, d);
+          } else {
+            $.when(geocode($('#pickup').val()), geocode($('#dropoff').val()))
+             .done(function(pa, da){
+               compute(
+                 { lat: pa[0].lat, lon: pa[0].lon },
+                 { lat: da[0].lat, lon: da[0].lon }
+               );
+             });
+          }
+        });
+
+        // Checkout button: send data to server and redirect
+        $('#checkout-btn').on('click', function(e){
+          e.preventDefault();
+          console.log('Checkout button clicked.');
+          // Use the computed values; additional services are taken from checkbox states
+          $.post(params.ajax_url, {
+            action:            'dsc_set_shipping_fee',
+            shipping_fee:      computedFee.toFixed(2),
+            distance:          computedMiles.toFixed(2),
+            packages:          computedPkgCount,
+            weight:            computedPkgWeight,
+            service_label:     $('#service_label').is(':checked') ? 1 : 0,
+            service_packaging: $('#service_packaging').is(':checked') ? 1 : 0,
+            service_rush:      $('#service_rush').is(':checked') ? 1 : 0,
+            service_bulk:      $('#service_bulk').is(':checked') ? 1 : 0
+          }).done(function(response) {
+            console.log('AJAX success. Response:', response);
+            // Hide the wrapper containing the form and map
+            $('#dsc-wrapper').fadeOut('fast', function(){
+              // Append a full-screen loading overlay
+              var loadingHtml = '<div id="dsc-loading" style="position:fixed; top:0; left:0; width:100%; height:100%; display:flex; justify-content:center; align-items:center; background:#fff; z-index:9999;">' +
+                '<div><p><strong>Redirecting to checkout...</strong> <span class="dsc-spinner"></span><br><em>Please wait...</em></p></div>' +
+                '</div>';
+              $('body').append(loadingHtml);
+              setTimeout(function() {
+                window.location.href = params.checkout_url;
+              }, 1000);
+            });
+          }).fail(function(jqXHR, textStatus, errorThrown) {
+            console.error('AJAX post error:', textStatus, errorThrown);
+            $('#dsc-osrm-result').html('<p>Error setting shipping fee. Please try again.</p>');
+          });
+        });
+
+      });
+    })(jQuery);
     </script>
     <?php
     return ob_get_clean();
 }
 
-/* ---------------------------------------------------------------------------
-   Section 2: WooCommerce Shipping Method Integration
---------------------------------------------------------------------------- */
-// Ensure WooCommerce is active before adding our shipping method.
-if (in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get_option('active_plugins')))) {
+// AJAX handler: add Distance Shipping product
+add_action( 'wp_ajax_dsc_set_shipping_fee', 'dsc_set_shipping_fee' );
+add_action( 'wp_ajax_nopriv_dsc_set_shipping_fee', 'dsc_set_shipping_fee' );
+function dsc_set_shipping_fee() {
+    if ( ! isset( $_POST['shipping_fee'] ) || ! WC()->cart ) {
+        wp_send_json_error( 'Invalid request.' );
+    }
+    $fee      = floatval( $_POST['shipping_fee'] );
+    $distance = floatval( $_POST['distance'] ?? 0 );
+    $packages = intval( $_POST['packages'] ?? 0 );
+    $weight   = floatval( $_POST['weight'] ?? 0 );
+    $services = [];
+    if ( ! empty( $_POST['service_label'] ) )     { $services['Label Printing']   = $packages * 1; }
+    if ( ! empty( $_POST['service_packaging'] ) ) { $services['Packaging Service'] = $packages * 2; }
+    if ( ! empty( $_POST['service_rush'] ) )      { $services['Rush Service']      = 3; }
+    if ( ! empty( $_POST['service_bulk'] ) )      { $services['Bulk Discount']     = '-'; }
 
-    // Initialize our custom shipping method after WooCommerce has loaded.
-    add_action('woocommerce_shipping_init', 'dsc_osrm_wc_shipping_method_init');
-    function dsc_osrm_wc_shipping_method_init()
-    {
-        if (!class_exists('WC_Distance_Shipping_Method')) {
-            class WC_Distance_Shipping_Method extends WC_Shipping_Method
-            {
-
-                /**
-                 * Constructor.
-                 *
-                 * @param int $instance_id Instance id.
-                 */
-                public function __construct($instance_id = 0)
-                {
-                    $this->id = 'distance_shipping';
-                    $this->instance_id = absint($instance_id);
-                    $this->method_title = __('Distance Shipping', 'text-domain');
-                    $this->method_description = __('Calculates shipping cost based on driving distance using OSRM/Nominatim.', 'text-domain');
-
-                    // Limit this method to US addresses.
-                    $this->availability = 'including';
-                    $this->countries = array('US');
-
-                    // Initialize settings.
-                    $this->init();
-                }
-
-                /**
-                 * Initialize settings form fields and settings.
-                 */
-                public function init()
-                {
-                    // Define settings fields.
-                    $this->init_form_fields();
-                    $this->init_settings();
-
-                    // Load settings.
-                    $this->title = $this->get_option('title');
-                    $this->origin_address = $this->get_option('origin_address');
-                    $this->base_rate = floatval($this->get_option('base_rate', 1));
-                    $this->package_surcharge = floatval($this->get_option('package_surcharge', 2));
-                    $this->weight_factor = floatval($this->get_option('weight_factor', 0.5));
-
-                    // Save settings.
-                    add_action('woocommerce_update_options_shipping_' . $this->id, array($this, 'process_admin_options'));
-                }
-
-                /**
-                 * Define settings fields for this shipping method.
-                 */
-                public function init_form_fields()
-                {
-                    $this->form_fields = array(
-                        'title' => array(
-                            'title' => __('Method Title', 'text-domain'),
-                            'type' => 'text',
-                            'description' => __('Title to be displayed on the checkout page.', 'text-domain'),
-                            'default' => __('Distance Shipping', 'text-domain'),
-                        ),
-                        'origin_address' => array(
-                            'title' => __('Origin Address', 'text-domain'),
-                            'type' => 'text',
-                            'description' => __('Enter the shipping origin address (USA only).', 'text-domain'),
-                            'default' => '',
-                        ),
-                        'base_rate' => array(
-                            'title' => __('Base Rate per Mile', 'text-domain'),
-                            'type' => 'number',
-                            'description' => __('Cost per mile.', 'text-domain'),
-                            'default' => '1',
-                            'desc_tip' => true,
-                        ),
-                        'package_surcharge' => array(
-                            'title' => __('Surcharge per Package', 'text-domain'),
-                            'type' => 'number',
-                            'description' => __('Additional cost per package.', 'text-domain'),
-                            'default' => '2',
-                            'desc_tip' => true,
-                        ),
-                        'weight_factor' => array(
-                            'title' => __('Cost per lb', 'text-domain'),
-                            'type' => 'number',
-                            'description' => __('Cost per pound of the total package weight.', 'text-domain'),
-                            'default' => '0.5',
-                            'desc_tip' => true,
-                        ),
-                    );
-                }
-
-                /**
-                 * Calculate shipping cost.
-                 *
-                 * @param array $package Package details.
-                 */
-                public function calculate_shipping($package = array())
-                {
-                    // Retrieve the destination address from $package.
-                    $destination = $package['destination'];
-                    $shipping_to = trim($destination['address'] . ' ' . $destination['city'] . ' ' . $destination['state'] . ' ' . $destination['postcode'] . ' ' . $destination['country']);
-
-                    // Check if origin address and destination are provided.
-                    if (empty($this->origin_address) || empty($shipping_to)) {
-                        return;
-                    }
-
-                    // Geocode the origin and destination addresses.
-                    $origin_coords = $this->geocode_address($this->origin_address);
-                    $dest_coords = $this->geocode_address($shipping_to);
-
-                    if (!$origin_coords || !$dest_coords) {
-                        return;
-                    }
-
-                    // Retrieve the route distance in meters using OSRM.
-                    $distance_meters = $this->get_route_distance($origin_coords, $dest_coords);
-                    if (!$distance_meters) {
-                        return;
-                    }
-
-                    // Convert distance to miles.
-                    $miles = $distance_meters / 1609.34;
-
-                    // Determine package count and total weight from the package contents.
-                    $num_packages = count($package['contents']);
-                    $total_weight = 0;
-                    foreach ($package['contents'] as $item) {
-                        $total_weight += $item['data']->get_weight() * $item['quantity'];
-                    }
-
-                    // Calculate shipping cost.
-                    // Formula: (miles * base_rate) + (num_packages * package_surcharge) + (total_weight * weight_factor)
-                    $cost = ($miles * $this->base_rate) + ($num_packages * $this->package_surcharge) + ($total_weight * $this->weight_factor);
-
-                    // Register the rate with WooCommerce.
-                    $rate = array(
-                        'id' => $this->id,
-                        'label' => $this->title,
-                        'cost' => $cost,
-                        'calc_tax' => 'per_item',
-                    );
-
-                    $this->add_rate($rate);
-                }
-
-                /**
-                 * Geocode an address using Nominatim (USA only).
-                 *
-                 * @param string $address The address to geocode.
-                 * @return array|false Returns an array with 'lat' and 'lon' or false on failure.
-                 */
-                private function geocode_address($address)
-                {
-                    $url = add_query_arg(array(
-                        'format' => 'json',
-                        'q' => $address,
-                        'limit' => 1,
-                        'countrycodes' => 'us', // Restrict results to USA.
-                    ), 'https://nominatim.openstreetmap.org/search');
-
-                    $response = wp_remote_get($url);
-                    if (is_wp_error($response)) {
-                        return false;
-                    }
-                    $body = wp_remote_retrieve_body($response);
-                    $data = json_decode($body, true);
-                    if (isset($data[0])) {
-                        return array(
-                            'lat' => $data[0]['lat'],
-                            'lon' => $data[0]['lon'],
-                        );
-                    }
-                    return false;
-                }
-
-                /**
-                 * Get route distance between two coordinates using OSRM.
-                 *
-                 * @param array $origin_coords Array containing 'lat' and 'lon' for origin.
-                 * @param array $dest_coords   Array containing 'lat' and 'lon' for destination.
-                 * @return float|false Returns the distance in meters or false on failure.
-                 */
-                private function get_route_distance($origin_coords, $dest_coords)
-                {
-                    $url = 'https://router.project-osrm.org/route/v1/driving/' .
-                        $origin_coords['lon'] . ',' . $origin_coords['lat'] . ';' .
-                        $dest_coords['lon'] . ',' . $dest_coords['lat'] .
-                        '?overview=false';
-
-                    $response = wp_remote_get($url);
-                    if (is_wp_error($response)) {
-                        return false;
-                    }
-                    $body = wp_remote_retrieve_body($response);
-                    $data = json_decode($body, true);
-                    if (isset($data['routes'][0])) {
-                        return floatval($data['routes'][0]['distance']);
-                    }
-                    return false;
-                }
-            }
+    // Remove existing DSC items
+    foreach ( WC()->cart->get_cart() as $key => $item ) {
+        if ( ! empty( $item['is_dsc_product'] ) ) {
+            WC()->cart->remove_cart_item( $key );
         }
     }
 
-    /**
-     * Register the custom shipping method with WooCommerce.
-     */
-    add_filter('woocommerce_shipping_methods', 'dsc_osrm_add_shipping_method');
-    function dsc_osrm_add_shipping_method($methods)
-    {
-        $methods['distance_shipping'] = 'WC_Distance_Shipping_Method';
-        return $methods;
+    // Add new DSC item
+    $cart_key = WC()->cart->add_to_cart(
+        DSC_SHIPPING_PRODUCT_ID,
+        1,
+        0,
+        [],
+        [
+            'is_dsc_product'  => true,
+            'distance_fee'    => $fee,
+            'distance_miles'  => $distance,
+            'packages'        => $packages,
+            'weight'          => $weight,
+            'services'        => $services,
+        ]
+    );
+
+    if ( $cart_key ) {
+        WC()->cart->calculate_totals();
+        wp_send_json_success( [ 'checkout_url' => wc_get_checkout_url() ] );
+    }
+
+    wp_send_json_error( 'Could not add distance-shipping product.' );
+}
+
+// Override price & title before totals
+add_action( 'woocommerce_before_calculate_totals', 'dsc_set_custom_price', 20 );
+function dsc_set_custom_price( $cart ) {
+    if ( is_admin() && ! defined( 'DOING_AJAX' ) ) return;
+    foreach ( $cart->get_cart() as $item ) {
+        if ( ! empty( $item['is_dsc_product'] ) ) {
+            $item['data']->set_price( $item['distance_fee'] );
+            $item['data']->set_name(
+                sprintf( '%s (%.2f miles)', $item['data']->get_name(), $item['distance_miles'] )
+            );
+        }
     }
 }
-?>
+
+// Display item data in cart & checkout
+add_filter( 'woocommerce_get_item_data', 'dsc_display_item_data', 10, 2 );
+function dsc_display_item_data( $data, $item ) {
+    if ( ! empty( $item['is_dsc_product'] ) ) {
+        $data[] = [ 'key' => 'Distance', 'value' => $item['distance_miles'] . ' miles' ];
+        $data[] = [ 'key' => 'Packages', 'value' => $item['packages'] ];
+        $data[] = [ 'key' => 'Weight per package', 'value' => $item['weight'] . ' lbs' ];
+        if ( ! empty( $item['services'] ) ) {
+            foreach ( $item['services'] as $svc => $amt ) {
+                $value = ( $amt === '-' ) ? '10% off applied' : '$' . number_format( $amt, 2 );
+                $data[] = [ 'key' => $svc, 'value' => $value ];
+            }
+        }
+    }
+    return $data;
+}
+
+// Save item meta to order
+add_action( 'woocommerce_checkout_create_order_line_item', 'dsc_add_order_item_meta', 10, 4 );
+function dsc_add_order_item_meta( $item, $cart_key, $values, $order ) {
+    if ( ! empty( $values['is_dsc_product'] ) ) {
+        $item->add_meta_data( 'Distance',           $values['distance_miles'] . ' miles', true );
+        $item->add_meta_data( 'Packages',           $values['packages'],               true );
+        $item->add_meta_data( 'Weight per package', $values['weight']   . ' lbs',      true );
+        if ( ! empty( $values['services'] ) ) {
+            foreach ( $values['services'] as $svc => $amt ) {
+                $label = ( $amt === '-' ) ? '10% off applied' : '$' . number_format( $amt, 2 );
+                $item->add_meta_data( $svc, $label, true );
+            }
+        }
+    }
+}
